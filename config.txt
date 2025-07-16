@@ -1,0 +1,61 @@
+# Advanced Network Security Testing Configuration v3.0
+# ===================================================
+
+# Cấu hình mục tiêu
+TARGET_SERVER=support.trianh.vn
+TARGET_PORT=443
+PROTOCOL=https
+
+# Cấu hình hiệu suất
+MAX_CONCURRENT=500
+DELAY_MS=5
+TIMEOUT_MS=15000
+MAX_RETRIES=5
+CONNECTION_IDLE_MS=3000
+
+# Cấu hình pfSense Bypass nâng cao
+PFSENSE_BYPASS=true
+FRAGMENT_PACKETS=true
+TTL_BYPASS=65
+TCP_WINDOW_SIZE=65535
+MSS_CLAMP=1452
+USE_TLS_FRAGMENTATION=true
+ROTATE_JA3_FINGERPRINT=true
+
+# Cấu hình proxy
+USE_DIRECT_RATIO=0.3
+PROXY_ROTATE_INTERVAL_SEC=30
+PROXY_BLACKLIST_TIME_MIN=2
+
+# Cấu hình kỹ thuật timing
+RANDOM_TIMING=true
+TIMING_JITTER_MS=150
+
+# Điều này giúp chia nhỏ gói tin để vượt qua deep packet inspection của pfSense
+# và điều chỉnh TTL để vượt qua bộ lọc gói tin
+
+# Endpoints to test (can have multiple lines)
+ENDPOINTS=/feedback/index
+ENDPOINTS=/task/index
+ENDPOINTS=/api/status
+ENDPOINTS=/health
+
+# Connection Strategy
+DIRECT_CONN_RATIO=0.4
+# 0.0 = 100% proxy, 1.0 = 100% direct
+
+# Bypass Modes: aggressive, stealth, balanced
+BYPASS_MODE=balanced
+
+# Advanced Features
+USER_AGENT_ROTATION=true
+HEADER_ROTATION=true
+REQUEST_RANDOMIZATION=true
+ADAPTIVE_DELAY=true
+
+# Preferred Countries (when using international proxies)
+PREFERRED_COUNTRIES=US,CA,GB,SG,JP,KR,DE,FR,NL,AU
+
+# Debug and Logging
+VERBOSE_OUTPUT=false
+LOG_LEVEL=INFO

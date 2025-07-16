@@ -1,1 +1,41 @@
-sv5.thueproxy.org:45383:Uc4cUv:UjvgzzPQ
+# Proxy List - Enhanced Format v4.0
+# Format: IP:PORT[:USERNAME:PASSWORD][:TYPE]
+# Supported types: http, socks5, socks4
+
+# Residential Proxies (High Success Rate - Vietnam)
+103.179.189.155:8080::http
+118.69.134.0:80::http
+123.30.185.189:8080::http
+113.161.131.43:80::http
+14.241.39.221:8080::http
+27.67.26.194:80::http
+117.5.31.10:41890::http
+
+# Private Proxies (High Speed)
+sv5.thueproxy.org:45383:Uc4cUv:UjvgzzPQ:http
+vnproxy.serverviet.com:33321:vnp123:vnp2023:http
+
+# Backup International Proxies
+159.65.170.18:80::http
+138.68.60.8:8080::http
+128.199.202.122:8080::http
+104.248.7.88:80::http
+159.65.69.186:9300::http
+188.166.4.251:8118::http
+143.110.232.177:80::http
+167.172.158.85:81::http
+167.172.96.117:80::http
+157.245.222.183:80::http
+
+# Socks5 Proxies (Better for SSL/TLS)
+51.79.52.80:3080::socks5
+185.2.100.97:49304::socks5
+178.128.180.254:9050::socks5
+
+# Special Proxies for pfSense Bypass
+170.64.186.198:8080::http
+45.76.183.193:8080::http
+165.22.59.84:8888::http
+103.74.121.46:80::http
+194.195.213.197:1080::socks5
+51.68.124.241:443::socks5
