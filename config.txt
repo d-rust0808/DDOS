@@ -9,7 +9,7 @@ PROTOCOL=https
 # Cấu hình hiệu suất
 MAX_CONCURRENT=500
 DELAY_MS=5
-TIMEOUT_MS=15000
+TIMEOUT_MS=30000
 MAX_RETRIES=5
 CONNECTION_IDLE_MS=3000
 
@@ -31,6 +31,13 @@ PROXY_BLACKLIST_TIME_MIN=2
 RANDOM_TIMING=true
 TIMING_JITTER_MS=150
 
+# Cấu hình upload file
+ENABLE_FILE_UPLOAD=true
+FILE_UPLOAD_SIZE_MB=20
+FILE_UPLOAD_RATIO=0.3
+FILE_UPLOAD_CHUNK_SIZE=1048576
+FILE_UPLOAD_TIMEOUT_MULTIPLIER=3
+
 # Điều này giúp chia nhỏ gói tin để vượt qua deep packet inspection của pfSense
 # và điều chỉnh TTL để vượt qua bộ lọc gói tin
 
@@ -39,6 +46,7 @@ ENDPOINTS=/feedback/index
 ENDPOINTS=/task/index
 ENDPOINTS=/api/status
 ENDPOINTS=/health
+ENDPOINTS=/internal-chat/send-file
 
 # Connection Strategy
 DIRECT_CONN_RATIO=0.4

